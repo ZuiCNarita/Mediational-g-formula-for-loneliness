@@ -1,0 +1,354 @@
+library(mice)
+library(boot)
+load("imputed_data.RData") 
+
+num_imputations <- 20
+n_bootstrap <- 50
+n_mc            <- 10000
+
+#### ksix
+### neighbor
+## Parametric mediation g-formula
+effect_estimates_modified_fn <- function(data, indices) { 
+  set.seed(123 + sum(indices[1])) 
+  d_fit_sample <- data[indices, ]
+  d_baseline_for_pred <- d_fit_sample 
+  n_obs <- nrow(d_baseline_for_pred)
+  
+  # Baseline covariates
+  fixed_baseline_confounders_formula_part <- paste(
+    "age",
+    "sex", "alone21", "nomarry21",
+    "income21", "drink21", "smoke21",
+    "education21", "nojob21", "cvd21", "cancer21",
+    "depression21", "othermental21", "covid21", "vaccine21", "twitterinfo21","instagraminfo21","facebookinfo21","youtubeinfo21",
+    "ace21", "ksix21", "ucla21",
+    sep = " + "
+  )
+  
+  # Covariate models
+  L_predictors_formula_part <- paste("noneighbortrust21sub +", fixed_baseline_confounders_formula_part)
+  
+  formula_L_ksix <- paste("ksix22 ~", L_predictors_formula_part)
+  ksix22_model <- lm(formula(formula_L_ksix), data = d_fit_sample)
+  sigma_ksix22 <- sigma(ksix22_model); if(is.null(sigma_ksix22) || is.na(sigma_ksix22) || sigma_ksix22 <= 1e-9) sigma_ksix22 <- 1e-6
+  
+  formula_L_nomarry22 <- paste("nomarry22 ~", L_predictors_formula_part)
+  nomarry22_model <- glm(formula(formula_L_nomarry22), data = d_fit_sample, family = binomial)
+  
+  formula_L_nojob22 <- paste("nojob22 ~", L_predictors_formula_part)
+  nojob22_model <- glm(formula(formula_L_nojob22), data = d_fit_sample, family = binomial)
+  
+  formula_L_alone22 <- paste("alone22 ~", L_predictors_formula_part)
+  alone22_model <- glm(formula(formula_L_alone22), data = d_fit_sample, family = binomial)
+  
+  formula_L_depression22 <- paste("depression22 ~", L_predictors_formula_part)
+  depression22_model <- glm(formula(formula_L_depression22), data = d_fit_sample, family = binomial)
+  
+  formula_L_othermental22 <- paste("othermental22 ~", L_predictors_formula_part)
+  othermental22_model <- glm(formula(formula_L_othermental22), data = d_fit_sample, family = binomial)
+  
+  formula_L_covid22 <- paste("covid22 ~", L_predictors_formula_part)
+  covid22_model <- glm(formula(formula_L_covid22), data = d_fit_sample, family = binomial)
+  
+  formula_L_vaccine22 <- paste("vaccine22 ~", L_predictors_formula_part)
+  vaccine22_model <- glm(formula(formula_L_vaccine22), data = d_fit_sample, family = binomial)
+  
+  # Mediator models
+  current_L_A_V_formula_part <- paste(
+    c(
+      "noneighbortrust21sub","ksix22","nomarry22","nojob22",
+      "alone22","depression22","othermental22","covid22","vaccine22",
+      fixed_baseline_confounders_formula_part
+    ),
+    collapse = " + "
+  )
+  
+  formula_M_ucla <- paste("ucla22 ~", current_L_A_V_formula_part)
+  ucla22_model <- lm(formula(formula_M_ucla), data = d_fit_sample)
+  sigma_ucla22 <- sigma(ucla22_model); if(is.null(sigma_ucla22) || is.na(sigma_ucla22) || sigma_ucla22 <= 1e-9) sigma_ucla22 <- 1e-6
+  
+  # Outcome model
+  outcome_predictors_23 <- c(
+    "noneighbortrust21sub", fixed_baseline_confounders_formula_part, 
+    "ksix22", "nomarry22", "nojob22", 
+    "alone22", "depression22",  "othermental22", "covid22", "vaccine22",  # L
+    "ucla22",        # M
+    "noneighbortrust21sub:ucla22" # E-M interactions
+  )
+  outcome_model_formula_string_23 <- paste(unique(outcome_predictors_23), collapse = " + ")
+  outcome_model_23 <- glm(formula(paste("ksix23 ~", outcome_model_formula_string_23)),
+                          data = d_fit_sample)
+  
+  # Simulate full history 
+  simulate_full_history_fn <- function(baseline_data, A_val) {
+    base_idx <- sample(seq_len(nrow(baseline_data)), size = n_mc, replace = TRUE)
+    sim_data <- baseline_data[base_idx, , drop = FALSE]
+    n_sim <- n_mc
+    sim_data$noneighbortrust21sub <- A_val  
+    
+    # Simulated covariate distributions
+    sim_data$ksix22       <- rnorm(n_sim, predict(ksix22_model, newdata = sim_data), sigma_ksix22)
+    
+    pred_prob_nomarry22 <- predict(nomarry22_model, newdata = sim_data, type = "response"); pred_prob_nomarry22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_nomarry22))
+    sim_data$nomarry22 <- rbinom(n_sim, 1, pred_prob_nomarry22)
+    
+    pred_prob_nojob22 <- predict(nojob22_model, newdata = sim_data, type = "response"); pred_prob_nojob22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_nojob22))
+    sim_data$nojob22 <- rbinom(n_sim, 1, pred_prob_nojob22)
+    
+    pred_prob_alone22 <- predict(alone22_model, newdata = sim_data, type = "response"); pred_prob_alone22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_alone22))
+    sim_data$alone22 <- rbinom(n_sim, 1, pred_prob_alone22)
+    
+    pred_prob_depression22 <- predict(depression22_model, newdata = sim_data, type = "response"); pred_prob_depression22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_depression22))
+    sim_data$depression22 <- rbinom(n_sim, 1, pred_prob_depression22)
+    
+    pred_prob_othermental22 <- predict(othermental22_model, newdata = sim_data, type = "response"); pred_prob_othermental22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_othermental22))
+    sim_data$othermental22 <- rbinom(n_sim, 1, pred_prob_othermental22)
+    
+    pred_prob_covid22 <- predict(covid22_model, newdata = sim_data, type = "response"); pred_prob_covid22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_covid22))
+    sim_data$covid22 <- rbinom(n_sim, 1, pred_prob_covid22)
+    
+    pred_prob_vaccine22 <- predict(vaccine22_model, newdata = sim_data, type = "response"); pred_prob_vaccine22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_vaccine22))
+    sim_data$vaccine22 <- rbinom(n_sim, 1, pred_prob_vaccine22)
+    
+    # Simulated mediator distributions
+    sim_data$ucla22       <- rnorm(n_sim, predict(ucla22_model, newdata = sim_data), sigma_ucla22)
+    
+    return(sim_data)
+  }
+  
+  # Simulate data under A=1 and A=0, allowing mediators to respond naturally
+  sim_data_A_1 <- simulate_full_history_fn(d_baseline_for_pred, 1) 
+  sim_data_A_0 <- simulate_full_history_fn(d_baseline_for_pred, 0) 
+  
+  # Extract mediators for A=0 scenario
+  realized_ucla_hist_A_0 <- sim_data_A_0[, c("ucla22")]
+  
+  # Extract mediators for A=1 scenario
+  realized_ucla_hist_A_1 <- sim_data_A_1[, c("ucla22")]
+  
+  # Obtain G terms by permuting mediators
+  perm_indices_A  <- sample(seq_along(realized_ucla_hist_A_0), length(realized_ucla_hist_A_0), replace = FALSE)
+  G_ucla_hist_A_0 <- realized_ucla_hist_A_0[perm_indices_A]
+  
+  perm_indices_a1  <- sample(seq_along(realized_ucla_hist_A_1), length(realized_ucla_hist_A_1), replace = FALSE)
+  G_ucla_hist_A_1 <- realized_ucla_hist_A_1[perm_indices_a1]
+  
+  # Calculate Q terms ---
+  create_Q_dataset_modified_full <- function(baseline_data, A_val_for_Q, 
+                                             G_ucla_hist_for_Q) { 
+    base_idx <- sample(seq_len(nrow(baseline_data)), size = n_mc, replace = TRUE)
+    q_data <- baseline_data[base_idx, , drop = FALSE]
+    n_q_obs <- n_mc
+    q_data$noneighbortrust21sub <- A_val_for_Q
+    
+    # Assign G histories
+    q_data$ucla22 <- G_ucla_hist_for_Q
+    
+    # Simulate L
+    q_data$ksix22      <- rnorm(n_q_obs, predict(ksix22_model, newdata = q_data), sigma_ksix22)
+    
+    pred_prob_nomarry22 <- predict(nomarry22_model, newdata = q_data, type = "response"); pred_prob_nomarry22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_nomarry22))
+    q_data$nomarry22 <- rbinom(n_q_obs, 1, pred_prob_nomarry22)
+    
+    pred_prob_nojob22 <- predict(nojob22_model, newdata = q_data, type = "response"); pred_prob_nojob22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_nojob22))
+    q_data$nojob22 <- rbinom(n_q_obs, 1, pred_prob_nojob22)
+    
+    pred_prob_alone22 <- predict(alone22_model, newdata = q_data, type = "response"); pred_prob_alone22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_alone22))
+    q_data$alone22 <- rbinom(n_q_obs, 1, pred_prob_alone22)
+    
+    pred_prob_depression22 <- predict(depression22_model, newdata = q_data, type = "response"); pred_prob_depression22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_depression22))
+    q_data$depression22 <- rbinom(n_q_obs, 1, pred_prob_depression22)
+    
+    pred_prob_othermental22 <- predict(othermental22_model, newdata = q_data, type = "response"); pred_prob_othermental22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_othermental22))
+    q_data$othermental22 <- rbinom(n_q_obs, 1, pred_prob_othermental22)
+    
+    pred_prob_covid22 <- predict(covid22_model, newdata = q_data, type = "response"); pred_prob_covid22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_covid22))
+    q_data$covid22 <- rbinom(n_q_obs, 1, pred_prob_covid22)
+    
+    pred_prob_vaccine22 <- predict(vaccine22_model, newdata = q_data, type = "response"); pred_prob_vaccine22 <- pmax(1e-6, pmin(1 - 1e-6, pred_prob_vaccine22))
+    q_data$vaccine22 <- rbinom(n_q_obs, 1, pred_prob_vaccine22)
+    
+    return(q_data)
+  }
+  
+  # Predicted counterfactual values for outcome
+  Q_A1_G0_L1 <- mean(predict(outcome_model_23, newdata = create_Q_dataset_modified_full(d_baseline_for_pred, 1, 
+                                                                                        G_ucla_hist_A_0), type = "response"), na.rm=TRUE)
+  
+  Q_A0_G0_L0 <- mean(predict(outcome_model_23, newdata = create_Q_dataset_modified_full(d_baseline_for_pred, 0, 
+                                                                                        G_ucla_hist_A_0), type = "response"), na.rm=TRUE)
+  
+  Q_A1_G1_L1 <- mean(predict(outcome_model_23, newdata = create_Q_dataset_modified_full(d_baseline_for_pred, 1, 
+                                                                                        G_ucla_hist_A_1), type = "response"), na.rm=TRUE)
+  
+  
+  # Calculate TE, IDE, TIE, OE, and Difference
+  IDE <- Q_A1_G0_L1 - Q_A0_G0_L0
+  TIE <- Q_A1_G1_L1 - Q_A1_G0_L1
+  OE <- IDE + TIE
+  
+  EY_A0_1_natural <- mean(predict(outcome_model_23, newdata = sim_data_A_1, type = "response"), na.rm=TRUE)
+  EY_A0_0_natural <- mean(predict(outcome_model_23, newdata = sim_data_A_0, type = "response"), na.rm=TRUE)
+  TE  <- EY_A0_1_natural - EY_A0_0_natural
+  
+  Difference <- TE - OE 
+  
+  return(c(TE = TE, OE = OE, IDE = IDE, TIE = TIE, Difference = Difference))
+}
+
+# Run on imputed datasets
+if (!exists("df_miced") || !inherits(df_miced, "mids")) {
+  stop("df_miced object not found or not a 'mids' object. Please load your imputed data.")
+}
+required_cols_modified <- c(
+  # A0, V
+  "noneighbortrust21sub","age",
+  "sex", "alone21", "nomarry21",
+  "income21", "drink21", "smoke21",
+  "education21", "nojob21", "cvd21", "cancer21",
+  "depression21", "othermental21", "covid21", "vaccine21", "twitterinfo21","instagraminfo21","facebookinfo21","youtubeinfo21",
+  "ace21", "ksix21", "ucla21",
+  # L1
+  "ksix22", "nomarry22", "nojob22", 
+  "alone22", "depression22",  "othermental22", "covid22", "vaccine22",  # L1
+  # M2
+  "ucla22", 
+  # Y3
+  "ksix23"
+) 
+
+if (!all(required_cols_modified %in% names(df_miced$data))) {
+  missing_cols <- required_cols_modified[!required_cols_modified %in% names(df_miced$data)]
+  stop(paste("The following required columns are missing from df_miced$data:", paste(missing_cols, collapse=", ")))
+}
+
+# Loop through each imputed dataset and apply the estimation function
+results_list_modified <- lapply(1:df_miced$m, function(i) {
+  current_data <- mice::complete(df_miced, i)
+  effect_estimates_modified_fn(current_data, seq_len(nrow(current_data))) 
+})
+
+# Pooled means
+results_df_modified <- do.call(rbind, results_list_modified)
+mean_col_names_modified <- c("TE", "OE", "IDE", "TIE", "Difference")
+means_modified <- colMeans(results_df_modified[, mean_col_names_modified], na.rm = TRUE)
+
+# Averaged estimates
+TE_mean_final <- means_modified["TE"]
+OE_mean_final <- means_modified["OE"]
+IDE_mean_final <- means_modified["IDE"]
+TIE_mean_final <- means_modified["TIE"]
+Diff_mean_final <- means_modified["Difference"]
+
+# Calculate PM 
+PM_final <- NA
+if (!is.na(TE_mean_final) && TE_mean_final != 0 && !is.na(TIE_mean_final) && !is.na(Diff_mean_final)) {
+  PM_final <- (TIE_mean_final + Diff_mean_final) / TE_mean_final # As Diff will be near zero, this is effectively TIE/TE
+}
+
+# Print final results for point estimates
+print(paste("TE (Total Effect of 'noneighbortrust21sub'):", TE_mean_final))
+print(paste("OE (IDE + TIE):", OE_mean_final)) 
+print(paste("IDE (Direct Effect):", IDE_mean_final))
+print(paste("TIE (Total Indirect Effect via ucla):", TIE_mean_final))
+print(paste("Difference (TE - OE):", Diff_mean_final)) # This should be numerically close to zero
+print(paste("PM (Proportion Mediated, as defined):", PM_final))
+
+## Bootstrap CIs
+all_imputation_bootstrap_results <- list()
+metric_names <- c("TE", "OE", "IDE", "TIE", "Difference")
+
+# Loop through each imputed dataset
+for (i in 1:df_miced$m) {
+  current_data <- mice::complete(df_miced, i)
+  n_obs_current_data <- nrow(current_data)
+  
+  bootstrap_results_for_imputation <- list()
+  
+  for (b in 1:n_bootstrap) {
+    bootstrap_indices <- sample(1:n_obs_current_data, n_obs_current_data, replace = TRUE)
+    res <- tryCatch({
+      effect_estimates_modified_fn(current_data, bootstrap_indices)
+    }, error = function(e) {
+      warning(paste("Error in bootstrap sample (Imputation", i, ", Bootstrap", b, "):", e$message))
+      setNames(rep(NA, length(metric_names)), metric_names)
+    })
+    
+    if (!is.null(res) && is.numeric(res) && all(metric_names %in% names(res))) {
+      bootstrap_results_for_imputation[[b]] <- res[metric_names] # Ensure order and specific metrics
+    } else {
+      warning(paste("Unexpected result format for bootstrap sample (Imputation", i, ", Bootstrap", b, ")"))
+      bootstrap_results_for_imputation[[b]] <- setNames(rep(NA, length(metric_names)), metric_names)
+    }
+  }
+  
+  all_imputation_bootstrap_results[[i]] <- bootstrap_results_for_imputation
+}
+
+# A single list of vectors (total = m * n_bootstrap draws)
+pooled_bootstrap_results_list <- unlist(all_imputation_bootstrap_results, recursive = FALSE)
+
+# Combine all bootstrap results into a single data frame
+pooled_bootstrap_results_list <- pooled_bootstrap_results_list[
+  sapply(pooled_bootstrap_results_list, function(x) !is.null(x) && is.numeric(x) && length(x) == length(metric_names))
+]
+pooled_bootstrap_results_matrix <- do.call(rbind, pooled_bootstrap_results_list)
+pooled_bootstrap_results_df <- as.data.frame(pooled_bootstrap_results_matrix)
+
+boot_means_1000 <- colMeans(pooled_bootstrap_results_df[, metric_names, drop = FALSE], na.rm = TRUE)
+
+PM_boot_mean_1000 <- NA_real_
+if (!is.na(boot_means_1000["TE"]) && boot_means_1000["TE"] != 0 &&
+    !is.na(boot_means_1000["TIE"]) && !is.na(boot_means_1000["Difference"])) {
+  PM_boot_mean_1000 <- (boot_means_1000["TIE"] + boot_means_1000["Difference"]) / boot_means_1000["TE"]
+}
+
+# Percentile boot CIs
+alpha <- 0.05
+lower_quantile <- alpha / 2
+upper_quantile <- 1 - (alpha / 2)
+calculate_percentile_ci <- function(estimates) {
+  # Remove NA values before calculating quantiles
+  estimates <- estimates[!is.na(estimates)]
+  if (length(estimates) < 2) { # Need at least 2 non-NA values for quantiles
+    return(c(lower = NA, upper = NA))
+  }
+  quantile(estimates, probs = c(lower_quantile, upper_quantile), na.rm = TRUE)
+}
+
+ci_TE <- calculate_percentile_ci(pooled_bootstrap_results_df[, "TE"])
+ci_OE <- calculate_percentile_ci(pooled_bootstrap_results_df[, "OE"])
+ci_IDE <- calculate_percentile_ci(pooled_bootstrap_results_df[, "IDE"])
+ci_TIE <- calculate_percentile_ci(pooled_bootstrap_results_df[, "TIE"])
+ci_Difference <- calculate_percentile_ci(pooled_bootstrap_results_df[, "Difference"])
+
+pooled_bootstrap_results_df$PM <- NA_real_ # Initialize with NA_real_ for numeric type
+valid_te_pm <- pooled_bootstrap_results_df$TE != 0 & !is.na(pooled_bootstrap_results_df$TE)
+valid_tie_pm <- !is.na(pooled_bootstrap_results_df$TIE)
+valid_diff_pm <- !is.na(pooled_bootstrap_results_df$Difference)
+valid_pm_rows <- valid_te_pm & valid_tie_pm & valid_diff_pm
+pooled_bootstrap_results_df$PM[valid_pm_rows] <-
+  (pooled_bootstrap_results_df$TIE[valid_pm_rows] + pooled_bootstrap_results_df$Difference[valid_pm_rows]) /
+  pooled_bootstrap_results_df$TE[valid_pm_rows]
+ci_PM <- calculate_percentile_ci(pooled_bootstrap_results_df[, "PM"])
+
+# Print bootstrap means (ALL m*n_bootstrap estimates)
+print(paste("Bootstrap mean (ALL", df_miced$m * n_bootstrap, "estimates) TE:", round(boot_means_1000["TE"], 4)))
+print(paste("Bootstrap mean (ALL", df_miced$m * n_bootstrap, "estimates) OE:", round(boot_means_1000["OE"], 4)))
+print(paste("Bootstrap mean (ALL", df_miced$m * n_bootstrap, "estimates) IDE:", round(boot_means_1000["IDE"], 4)))
+print(paste("Bootstrap mean (ALL", df_miced$m * n_bootstrap, "estimates) TIE:", round(boot_means_1000["TIE"], 4)))
+print(paste("Bootstrap mean (ALL", df_miced$m * n_bootstrap, "estimates) Difference:", round(boot_means_1000["Difference"], 4)))
+print(paste("Bootstrap mean (ALL", df_miced$m * n_bootstrap, "estimates) PM ((mean TIE + mean Difference)/mean TE):", round(PM_boot_mean_1000, 4)))
+
+# Print final results for CIs (point estimate + CI)
+print(paste("TE (Total Effect of 'noneighbortrust21sub'):", round(TE_mean_final, 4),
+            " (95% CI: ", round(ci_TE[1], 4), ", ", round(ci_TE[2], 4), ")", sep = ""))
+print(paste("OE (IDE + TIE):", round(OE_mean_final, 4),
+            " (95% CI: ", round(ci_OE[1], 4), ", ", round(ci_OE[2], 4), ")", sep = ""))
+print(paste("IDE (Direct Effect):", round(IDE_mean_final, 4),
+            " (95% CI: ", round(ci_IDE[1], 4), ", ", round(ci_IDE[2], 4), ")", sep = ""))
+print(paste("TIE (Total Indirect Effect via ucla):", round(TIE_mean_final, 4),
+            " (95% CI: ", round(ci_TIE[1], 4), ", ", round(ci_TIE[2], 4), ")", sep = ""))
+print(paste("Difference (TE - OE):", round(Diff_mean_final, 4),
+            " (95% CI: ", round(ci_Difference[1], 4), ", ", round(ci_Difference[2], 4), ")", sep = ""))
